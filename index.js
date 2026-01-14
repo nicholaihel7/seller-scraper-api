@@ -74,59 +74,87 @@ async function scrapeSeller(url) {
 
     if (platform === 'Trendyol') {
       result = await page.evaluate((baseResult) => {
-        // Fiyat - doğrudan text içeriğinden çek
-        const allText = document.body.innerText;
+        // Trendyol JSON verisini script tag'inden çek
+        const scripts = document.querySelectorAll('script');
+        let productData = null;
         
-        // Fiyat regex ile bul (XX.XXX TL formatında)
-        const priceMatch = allText.match(/(\d{1,3}\.?\d{3})\s*TL/);
-        if (priceMatch) {
-          baseResult.priceText = priceMatch[0];
-          baseResult.price = parseFloat(priceMatch[1].replace('.', ''));
-        }
-        
-        // Ürün adı - h1 veya title'dan
-        const h1 = document.querySelector('h1');
-        if (h1) {
-          baseResult.title = h1.textContent.trim();
-        } else {
-          // Breadcrumb'dan marka + ürün adı
-          const brand = document.querySelector('a[href*="-x-b"]');
-          if (brand) {
-            baseResult.title = brand.textContent.trim();
+        for (const script of scripts) {
+          const text = script.textContent || '';
+          // __PRODUCT_DETAIL_APP_INITIAL_STATE__ veya window.__INITIAL_STATE__ ara
+          if (text.includes('PRODUCT_DETAIL') || text.includes('INITIAL_STATE')) {
+            try {
+              // JSON objesini bul
+              const match = text.match(/window\.__PRODUCT_DETAIL_APP_INITIAL_STATE__\s*=\s*({.+?});/s) ||
+                           text.match(/window\.__INITIAL_STATE__\s*=\s*({.+?});/s);
+              if (match) {
+                productData = JSON.parse(match[1]);
+                break;
+              }
+            } catch (e) {}
           }
         }
         
-        // Satıcı - çeşitli selector'lar dene
-        const sellerSelectors = [
-          // Merchant/satıcı alanı
-          '[class*="merchant"] a',
-          '[class*="seller"] a', 
-          '[data-testid*="merchant"]',
-          '[data-testid*="seller"]',
-          // Link bazlı
-          'a[href*="/magaza/"]',
-          'a[href*="/satici/"]',
-          // Metin bazlı
-          '.seller-name',
-          '.merchant-name'
-        ];
+        // JSON'dan veri çek
+        if (productData) {
+          try {
+            const product = productData.product || productData;
+            
+            // Satıcı adı
+            if (product.merchant?.name) {
+              baseResult.seller = product.merchant.name;
+            } else if (product.seller?.name) {
+              baseResult.seller = product.seller.name;
+            }
+            
+            // Fiyat
+            if (product.price?.sellingPrice) {
+              baseResult.price = product.price.sellingPrice.value || product.price.sellingPrice;
+              baseResult.priceText = baseResult.price.toLocaleString('tr-TR') + ' TL';
+            } else if (product.price?.originalPrice) {
+              baseResult.price = product.price.originalPrice.value || product.price.originalPrice;
+              baseResult.priceText = baseResult.price.toLocaleString('tr-TR') + ' TL';
+            }
+            
+            // Ürün adı
+            if (product.name) {
+              baseResult.title = product.name;
+            }
+            
+            // Rating
+            if (product.ratingScore?.averageRating) {
+              baseResult.rating = product.ratingScore.averageRating.toString();
+            }
+            
+            // Marka mağazası mı?
+            baseResult.isOfficial = product.merchant?.isOfficialBrand || false;
+            
+          } catch (e) {}
+        }
         
-        for (const sel of sellerSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim() && el.textContent.trim().length > 1) {
-            const text = el.textContent.trim();
-            // "Satıcı:" gibi prefix'leri temizle
-            baseResult.seller = text.replace(/^Satıcı:?\s*/i, '').trim();
-            break;
+        // Fallback: JSON bulunamazsa HTML'den çek
+        if (!baseResult.price) {
+          const allText = document.body.innerText;
+          const priceMatch = allText.match(/(\d{1,3}\.?\d{3})\s*TL/);
+          if (priceMatch) {
+            baseResult.priceText = priceMatch[0];
+            baseResult.price = parseFloat(priceMatch[1].replace('.', ''));
           }
         }
         
-        // Rating
-        const ratingEl = document.querySelector('[class*="rating"]');
-        if (ratingEl) {
-          const ratingMatch = ratingEl.textContent.match(/[\d,\.]+/);
-          if (ratingMatch) {
-            baseResult.rating = ratingMatch[0];
+        if (!baseResult.title) {
+          const h1 = document.querySelector('h1');
+          if (h1) {
+            baseResult.title = h1.textContent.trim();
+          }
+        }
+        
+        if (!baseResult.seller) {
+          // Script içinden "name":"XXX Satıcı" pattern'i ara
+          const pageSource = document.documentElement.innerHTML;
+          const sellerMatch = pageSource.match(/"name"\s*:\s*"([^"]+(?:Satıcı|Store|Shop)[^"]*)"/i) ||
+                             pageSource.match(/"merchantName"\s*:\s*"([^"]+)"/i);
+          if (sellerMatch) {
+            baseResult.seller = sellerMatch[1];
           }
         }
         
