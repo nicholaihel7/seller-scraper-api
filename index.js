@@ -1,5 +1,6 @@
 const express = require('express');
 const puppeteer = require('puppeteer-core');
+const https = require('https');
 
 const app = express();
 app.use(express.json());
@@ -503,23 +504,29 @@ app.get('/api/search', async (req, res) => {
   }
   
   try {
-    // Trendyol public API - arama sonuçları
     const apiUrl = `https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?q=${encodeURIComponent(q)}&qt=${encodeURIComponent(q)}&st=${encodeURIComponent(q)}&os=1&pi=1&culture=tr-TR&userGenderId=1&pId=0&scoringAlgorithmId=2&categoryRelevancyEnabled=false&isLegalRequirementConfirmed=false&searchStrategyType=DEFAULT&productStampType=TypeA`;
     
-    const response = await fetch(apiUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Origin': 'https://www.trendyol.com',
-        'Referer': 'https://www.trendyol.com/'
-      }
+    const data = await new Promise((resolve, reject) => {
+      const options = {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json'
+        }
+      };
+      
+      https.get(apiUrl, options, (response) => {
+        let body = '';
+        response.on('data', chunk => body += chunk);
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error('JSON parse error: ' + body.substring(0, 500)));
+          }
+        });
+      }).on('error', reject);
     });
     
-    if (!response.ok) {
-      throw new Error(`Trendyol API error: ${response.status}`);
-    }
-    
-    const data = await response.json();
     const rawProducts = data?.result?.products || [];
     
     const products = rawProducts.slice(0, parseInt(limit)).map(p => ({
@@ -553,6 +560,7 @@ app.get('/api/search', async (req, res) => {
   } catch (error) {
     res.status(500).json({
       error: error.message,
+      errorType: error.name,
       success: false
     });
   }
