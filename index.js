@@ -149,12 +149,29 @@ async function scrapeSeller(url) {
         }
         
         if (!baseResult.seller) {
-          // Script içinden "name":"XXX Satıcı" pattern'i ara
+          // Script içinden satıcı bilgisini ara
           const pageSource = document.documentElement.innerHTML;
-          const sellerMatch = pageSource.match(/"name"\s*:\s*"([^"]+(?:Satıcı|Store|Shop)[^"]*)"/i) ||
-                             pageSource.match(/"merchantName"\s*:\s*"([^"]+)"/i);
-          if (sellerMatch) {
-            baseResult.seller = sellerMatch[1];
+          
+          // "merchantName":"XXX" formatı
+          let sellerMatch = pageSource.match(/"merchantName"\s*:\s*"([^"]{2,50})"/);
+          
+          // "seller":"Satıcı"... sonra "name":"XXX" formatı
+          if (!sellerMatch) {
+            // Trendyol'un özel formatı: ..."seller":"Satıcı"..."name":"Troy Apple Yetkili Satıcı"...
+            sellerMatch = pageSource.match(/"seller"\s*:\s*"Satıcı"[^}]*"name"\s*:\s*"([^"]+)"/);
+          }
+          
+          // Alternatif: "name":"XXX Yetkili Satıcı" veya "XXX Store"
+          if (!sellerMatch) {
+            sellerMatch = pageSource.match(/"name"\s*:\s*"([^"]*(?:Yetkili|Satıcı|Store|Mağaza)[^"]*)"/i);
+          }
+          
+          if (sellerMatch && sellerMatch[1]) {
+            // Kargo, indirim gibi kelimeleri içeriyorsa atla
+            const seller = sellerMatch[1];
+            if (!seller.includes('Kargo') && !seller.includes('Bedava') && !seller.includes('indirim')) {
+              baseResult.seller = seller;
+            }
           }
         }
         
