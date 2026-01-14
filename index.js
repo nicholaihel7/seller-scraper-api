@@ -370,32 +370,63 @@ app.get('/api/all-sellers', async (req, res) => {
         });
       }
       
-      // Diğer satıcılar bölümünden çek - Trendyol'un yeni yapısı
-      const sellerCards = document.querySelectorAll('[data-testid="side-other-seller-container"] > div, [class*="other-seller-container"] > div, [class*="merchant-box"], [class*="seller-card"]');
+      // Diğer satıcılar bölümünden çek - Trendyol slider yapısı
+      const sellerCards = document.querySelectorAll('[data-testid="box"].other-merchant-item-box, div.other-merchant-item-box, [class*="other-merchant-item-box"]');
       
       sellerCards.forEach(card => {
-        const nameEl = card.querySelector('a[href*="/magaza/"], [class*="merchant-name"], [class*="seller-name"]');
-        const priceEl = card.querySelector('[class*="prc"], [class*="price"]');
-        const ratingEl = card.querySelector('[class*="rating"], [class*="score"], [class*="slf-"]');
+        // Satıcı adı - ilk link veya başlık
+        const nameEl = card.querySelector('a[href*="/magaza/"], [class*="merchant-name"], span[class*="title"]');
+        // Fiyat
+        const priceEl = card.querySelector('[class*="prc"], span[class*="price"]');
+        // Puan - genelde mavi badge içinde
+        const ratingEl = card.querySelector('[class*="rating"], [class*="score"], span[class*="slf"]');
         
-        if (nameEl || priceEl) {
-          const priceText = priceEl?.textContent?.trim() || '';
-          const priceMatch = priceText.match(/([\d\.]+)\s*TL/);
-          const ratingText = ratingEl?.textContent?.trim() || '';
-          const ratingMatch = ratingText.match(/[\d,\.]+/);
-          
-          const sellerName = nameEl?.textContent?.trim() || '';
-          
-          // Boş veya geçersiz satıcıları atla
-          if (sellerName && sellerName.length > 1 && !sellerName.includes('Kargo')) {
-            sellers.push({
-              seller: sellerName,
-              price: priceMatch ? parseFloat(priceMatch[1].replace('.', '')) : null,
-              priceText: priceText,
-              rating: ratingMatch ? ratingMatch[0] : null,
-              isMain: false
-            });
+        let sellerName = '';
+        let price = null;
+        let priceText = '';
+        let rating = null;
+        
+        // Satıcı adını bul
+        if (nameEl) {
+          sellerName = nameEl.textContent.trim();
+        } else {
+          // Kart içindeki ilk anlamlı text
+          const allText = card.textContent;
+          const nameMatch = allText.match(/^([A-Za-zığüşöçİĞÜŞÖÇ\s]+)/);
+          if (nameMatch) sellerName = nameMatch[1].trim();
+        }
+        
+        // Fiyatı bul
+        if (priceEl) {
+          priceText = priceEl.textContent.trim();
+        } else {
+          const allText = card.textContent;
+          const priceMatch = allText.match(/([\d\.]+)\s*TL/);
+          if (priceMatch) {
+            priceText = priceMatch[0];
+            price = parseFloat(priceMatch[1].replace('.', ''));
           }
+        }
+        
+        if (!price && priceText) {
+          const match = priceText.match(/([\d\.]+)/);
+          if (match) price = parseFloat(match[1].replace('.', ''));
+        }
+        
+        // Puanı bul
+        const cardText = card.textContent;
+        const ratingMatch = cardText.match(/(\d[,\.]\d)/);
+        if (ratingMatch) rating = ratingMatch[1];
+        
+        // Geçerli satıcıları ekle
+        if (sellerName && sellerName.length > 2 && !sellerName.includes('Kargo') && !sellerName.includes('Teslim') && !sellerName.includes('Fatura')) {
+          sellers.push({
+            seller: sellerName.split('\n')[0].trim(), // İlk satırı al
+            price: price,
+            priceText: priceText,
+            rating: rating,
+            isMain: false
+          });
         }
       });
       
