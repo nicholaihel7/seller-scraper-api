@@ -494,97 +494,46 @@ app.get('/api/all-sellers', async (req, res) => {
   }
 });
 
-// TRENDYOL ARAMA - Ürün adına göre tüm sonuçları çek
+// TRENDYOL ARAMA - Public API kullan (Cloudflare bypass)
 app.get('/api/search', async (req, res) => {
-  const { q, platform = 'trendyol', limit = 50 } = req.query;
+  const { q, limit = 50 } = req.query;
   
   if (!q) {
     return res.status(400).json({ error: 'q (arama sorgusu) parametresi gerekli' });
   }
   
-  let browser;
-  
   try {
-    browser = await getBrowser();
-    const page = await browser.newPage();
+    // Trendyol public API - arama sonuçları
+    const apiUrl = `https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?q=${encodeURIComponent(q)}&qt=${encodeURIComponent(q)}&st=${encodeURIComponent(q)}&os=1&pi=1&culture=tr-TR&userGenderId=1&pId=0&scoringAlgorithmId=2&categoryRelevancyEnabled=false&isLegalRequirementConfirmed=false&searchStrategyType=DEFAULT&productStampType=TypeA`;
     
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    await page.setViewport({ width: 1920, height: 1080 });
-    
-    const searchUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-    
-    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 5000));
-    
-    // JSON state'den veya HTML'den ürünleri çek
-    const products = await page.evaluate((maxLimit) => {
-      const items = [];
-      
-      // Yöntem 1: JSON state'den çek
-      const scripts = document.querySelectorAll('script');
-      for (const script of scripts) {
-        const text = script.textContent || '';
-        if (text.includes('__SEARCH_APP_INITIAL_STATE__') || text.includes('products')) {
-          try {
-            const match = text.match(/window\.__SEARCH_APP_INITIAL_STATE__\s*=\s*({.+?});/s);
-            if (match) {
-              const data = JSON.parse(match[1]);
-              const prods = data?.products || data?.result?.products || [];
-              prods.slice(0, maxLimit).forEach(p => {
-                if (p.price?.sellingPrice?.value > 10) {
-                  items.push({
-                    title: p.name || p.title,
-                    price: p.price?.sellingPrice?.value || p.price?.originalPrice?.value,
-                    priceText: (p.price?.sellingPrice?.value || 0).toLocaleString('tr-TR') + ' TL',
-                    seller: p.merchantName || p.merchant?.name || null,
-                    rating: p.ratingScore?.averageRating?.toString() || null,
-                    url: 'https://www.trendyol.com' + (p.url || ''),
-                    image: p.images?.[0] || null,
-                    platform: 'Trendyol'
-                  });
-                }
-              });
-            }
-          } catch (e) {}
-        }
+    const response = await fetch(apiUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Origin': 'https://www.trendyol.com',
+        'Referer': 'https://www.trendyol.com/'
       }
-      
-      // Yöntem 2: JSON bulunamazsa HTML'den çek
-      if (items.length === 0) {
-        const cards = document.querySelectorAll('div[data-id]');
-        cards.forEach((card, i) => {
-          if (i >= maxLimit) return;
-          
-          const link = card.querySelector('a');
-          const priceEl = card.querySelector('div[class*="prc"]');
-          const titleEl = card.querySelector('span[class*="prdct-desc"]') || card.querySelector('h3') || card.querySelector('span[title]');
-          
-          const href = link?.getAttribute('href') || '';
-          const priceText = priceEl?.textContent || '';
-          const priceMatch = priceText.match(/([\d\.]+)/);
-          const price = priceMatch ? parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.')) : null;
-          
-          const title = titleEl?.textContent?.trim() || titleEl?.getAttribute('title') || '';
-          
-          if (title && price && price > 10) {
-            items.push({
-              title: title,
-              price: price,
-              priceText: price.toLocaleString('tr-TR') + ' TL',
-              seller: null,
-              rating: null,
-              url: href.startsWith('http') ? href : 'https://www.trendyol.com' + href,
-              image: null,
-              platform: 'Trendyol'
-            });
-          }
-        });
-      }
-      
-      return items;
-    }, parseInt(limit));
+    });
     
-    await browser.close();
+    if (!response.ok) {
+      throw new Error(`Trendyol API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const rawProducts = data?.result?.products || [];
+    
+    const products = rawProducts.slice(0, parseInt(limit)).map(p => ({
+      title: p.name,
+      price: p.price?.sellingPrice?.value || p.price?.originalPrice?.value || null,
+      priceText: (p.price?.sellingPrice?.value || 0).toLocaleString('tr-TR') + ' TL',
+      seller: p.merchantName || null,
+      rating: p.ratingScore?.averageRating?.toFixed(1) || null,
+      reviewCount: p.ratingScore?.totalRatingCount || 0,
+      url: 'https://www.trendyol.com' + p.url,
+      image: p.images?.[0] ? 'https://cdn.dsmcdn.com' + p.images[0] : null,
+      platform: 'Trendyol',
+      brandName: p.brand?.name || null
+    })).filter(p => p.price && p.price > 10);
     
     // Fiyata göre sırala
     products.sort((a, b) => a.price - b.price);
@@ -593,7 +542,7 @@ app.get('/api/search', async (req, res) => {
     
     res.json({
       query: q,
-      platform: platform,
+      platform: 'trendyol',
       totalProducts: products.length,
       cheapest: prices.length ? Math.min(...prices) : null,
       mostExpensive: prices.length ? Math.max(...prices) : null,
@@ -602,7 +551,6 @@ app.get('/api/search', async (req, res) => {
     });
     
   } catch (error) {
-    if (browser) await browser.close();
     res.status(500).json({
       error: error.message,
       success: false
