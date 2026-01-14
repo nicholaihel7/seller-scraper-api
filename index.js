@@ -339,11 +339,9 @@ app.get('/api/all-sellers', async (req, res) => {
     
     // "Tüm Satıcıları Göster" butonuna tıkla
     try {
-      const showAllButton = await page.$('button:has-text("TÜM SATICILARI"), [class*="show-all-sellers"]');
-      if (showAllButton) {
-        await showAllButton.click();
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      await page.waitForSelector('[data-testid="other-seller-button"], button.see-all-button-see-all-button', { timeout: 5000 });
+      await page.click('[data-testid="other-seller-button"], button.see-all-button-see-all-button');
+      await new Promise(r => setTimeout(r, 3000));
     } catch (e) {
       // Buton yoksa devam et
     }
@@ -372,27 +370,32 @@ app.get('/api/all-sellers', async (req, res) => {
         });
       }
       
-      // Diğer satıcılar bölümünden çek
-      const sellerCards = document.querySelectorAll('[class*="other-seller"], [class*="merchant-box"], [class*="seller-card"]');
+      // Diğer satıcılar bölümünden çek - Trendyol'un yeni yapısı
+      const sellerCards = document.querySelectorAll('[data-testid="side-other-seller-container"] > div, [class*="other-seller-container"] > div, [class*="merchant-box"], [class*="seller-card"]');
       
       sellerCards.forEach(card => {
-        const nameEl = card.querySelector('[class*="merchant-name"], [class*="seller-name"], a');
-        const priceEl = card.querySelector('[class*="price"]');
-        const ratingEl = card.querySelector('[class*="rating"], [class*="score"]');
+        const nameEl = card.querySelector('a[href*="/magaza/"], [class*="merchant-name"], [class*="seller-name"]');
+        const priceEl = card.querySelector('[class*="prc"], [class*="price"]');
+        const ratingEl = card.querySelector('[class*="rating"], [class*="score"], [class*="slf-"]');
         
         if (nameEl || priceEl) {
           const priceText = priceEl?.textContent?.trim() || '';
-          const priceMatch = priceText.match(/[\d\.]+/);
+          const priceMatch = priceText.match(/([\d\.]+)\s*TL/);
           const ratingText = ratingEl?.textContent?.trim() || '';
           const ratingMatch = ratingText.match(/[\d,\.]+/);
           
-          sellers.push({
-            seller: nameEl?.textContent?.trim() || 'Bilinmeyen Satıcı',
-            price: priceMatch ? parseFloat(priceMatch[0].replace('.', '')) : null,
-            priceText: priceText,
-            rating: ratingMatch ? ratingMatch[0] : null,
-            isMain: false
-          });
+          const sellerName = nameEl?.textContent?.trim() || '';
+          
+          // Boş veya geçersiz satıcıları atla
+          if (sellerName && sellerName.length > 1 && !sellerName.includes('Kargo')) {
+            sellers.push({
+              seller: sellerName,
+              price: priceMatch ? parseFloat(priceMatch[1].replace('.', '')) : null,
+              priceText: priceText,
+              rating: ratingMatch ? ratingMatch[0] : null,
+              isMain: false
+            });
+          }
         }
       });
       
