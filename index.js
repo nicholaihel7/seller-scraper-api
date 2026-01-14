@@ -422,6 +422,21 @@ app.get('/api/all-sellers', async (req, res) => {
     
     await browser.close();
     
+    // Duplicate satıcıları temizle (aynı isim + aynı fiyat olanları kaldır)
+    const uniqueSellers = [];
+    const seen = new Set();
+    
+    for (const seller of result.sellers) {
+      const key = `${seller.seller}-${seller.price}`;
+      if (!seen.has(key) && seller.price) {  // Fiyatı olmayanları da atla
+        seen.add(key);
+        uniqueSellers.push(seller);
+      }
+    }
+    
+    result.sellers = uniqueSellers;
+    result.totalSellers = uniqueSellers.length;
+    
     // Fiyata göre sırala
     result.sellers.sort((a, b) => (a.price || 999999) - (b.price || 999999));
     
