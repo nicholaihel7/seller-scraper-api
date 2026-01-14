@@ -44,10 +44,20 @@ async function scrapeSeller(url) {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1920, height: 1080 });
     
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    // Gereksiz kaynakları engelle - hız için
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
     
-    // Sayfanın yüklenmesi için ekstra bekle
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    
+    // Sayfanın JS'inin çalışması için bekle
+    await new Promise(r => setTimeout(r, 5000));
     
     let result = {
       url,
@@ -64,123 +74,116 @@ async function scrapeSeller(url) {
 
     if (platform === 'Trendyol') {
       result = await page.evaluate((baseResult) => {
-        // Satıcı adı - birden fazla selector dene
+        // Fiyat - doğrudan text içeriğinden çek
+        const allText = document.body.innerText;
+        
+        // Fiyat regex ile bul (XX.XXX TL formatında)
+        const priceMatch = allText.match(/(\d{1,3}\.?\d{3})\s*TL/);
+        if (priceMatch) {
+          baseResult.priceText = priceMatch[0];
+          baseResult.price = parseFloat(priceMatch[1].replace('.', ''));
+        }
+        
+        // Ürün adı - h1 veya title'dan
+        const h1 = document.querySelector('h1');
+        if (h1) {
+          baseResult.title = h1.textContent.trim();
+        } else {
+          // Breadcrumb'dan marka + ürün adı
+          const brand = document.querySelector('a[href*="-x-b"]');
+          if (brand) {
+            baseResult.title = brand.textContent.trim();
+          }
+        }
+        
+        // Satıcı - çeşitli selector'lar dene
         const sellerSelectors = [
-          '.merchant-text',
-          '.seller-name-text', 
-          '[data-testid="merchant-name"]',
-          '.product-seller a',
-          '.merchant-box-wrapper a',
-          'a[href*="/magaza/"]'
+          // Merchant/satıcı alanı
+          '[class*="merchant"] a',
+          '[class*="seller"] a', 
+          '[data-testid*="merchant"]',
+          '[data-testid*="seller"]',
+          // Link bazlı
+          'a[href*="/magaza/"]',
+          'a[href*="/satici/"]',
+          // Metin bazlı
+          '.seller-name',
+          '.merchant-name'
         ];
         
         for (const sel of sellerSelectors) {
           const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.seller = el.textContent.trim();
-            break;
-          }
-        }
-        
-        // Fiyat
-        const priceSelectors = ['.prc-dsc', '.product-price-container span', '[data-testid="price"]'];
-        for (const sel of priceSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.priceText = el.textContent.trim();
-            baseResult.price = parseFloat(baseResult.priceText.replace(/[^\d,]/g, '').replace(',', '.'));
-            break;
-          }
-        }
-        
-        // Ürün adı
-        const titleSelectors = ['.pr-new-br h1', '.product-name', 'h1.pr-new-br', '[data-testid="product-name"]'];
-        for (const sel of titleSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.title = el.textContent.trim();
+          if (el?.textContent?.trim() && el.textContent.trim().length > 1) {
+            const text = el.textContent.trim();
+            // "Satıcı:" gibi prefix'leri temizle
+            baseResult.seller = text.replace(/^Satıcı:?\s*/i, '').trim();
             break;
           }
         }
         
         // Rating
-        const ratingEl = document.querySelector('.rating-score, [data-testid="rating-score"]');
-        baseResult.rating = ratingEl?.textContent?.trim() || null;
+        const ratingEl = document.querySelector('[class*="rating"]');
+        if (ratingEl) {
+          const ratingMatch = ratingEl.textContent.match(/[\d,\.]+/);
+          if (ratingMatch) {
+            baseResult.rating = ratingMatch[0];
+          }
+        }
         
-        // Resmi mağaza kontrolü
-        baseResult.isOfficial = !!document.querySelector('.official-store-badge, .seller-badge, .brand-store');
-        baseResult.isTrusted = !!document.querySelector('.trusted-seller, .seller-badge');
-        
-        baseResult.success = !!(baseResult.seller || baseResult.price);
+        baseResult.success = !!(baseResult.price || baseResult.title);
         return baseResult;
       }, result);
       
     } else if (platform === 'Hepsiburada') {
       result = await page.evaluate((baseResult) => {
-        // Satıcı adı
-        const sellerSelectors = [
-          '.merchant-name',
-          '[data-test-id="merchant-name"]',
-          '.seller-name',
-          '#merchant-name',
-          'a[href*="/magaza/"]'
-        ];
-        
-        for (const sel of sellerSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.seller = el.textContent.trim();
-            break;
+        // Fiyat
+        const priceEl = document.querySelector('[data-test-id="price-current-price"], [class*="price"] span');
+        if (priceEl) {
+          baseResult.priceText = priceEl.textContent.trim();
+          const match = baseResult.priceText.match(/[\d\.]+/);
+          if (match) {
+            baseResult.price = parseFloat(match[0].replace('.', ''));
           }
         }
         
-        // Fiyat
-        const priceSelectors = ['[data-test-id="price-current-price"]', '.product-price', '#offering-price'];
-        for (const sel of priceSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.priceText = el.textContent.trim();
-            baseResult.price = parseFloat(baseResult.priceText.replace(/[^\d,]/g, '').replace(',', '.'));
-            break;
-          }
+        // Satıcı
+        const sellerEl = document.querySelector('[data-test-id="merchant-name"], [class*="merchant"]');
+        if (sellerEl) {
+          baseResult.seller = sellerEl.textContent.trim();
         }
         
         // Ürün adı
-        const titleSelectors = ['h1[data-test-id="product-name"]', '.product-name', '#product-name'];
-        for (const sel of titleSelectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) {
-            baseResult.title = el.textContent.trim();
-            break;
-          }
+        const titleEl = document.querySelector('h1');
+        if (titleEl) {
+          baseResult.title = titleEl.textContent.trim();
         }
         
-        // Rating
-        const ratingEl = document.querySelector('.rating-score, [data-test-id="rating-score"]');
-        baseResult.rating = ratingEl?.textContent?.trim() || null;
-        
-        baseResult.isOfficial = !!document.querySelector('.hb-store-badge, .official-store');
-        baseResult.isTrusted = !!document.querySelector('.trusted-badge');
-        
-        baseResult.success = !!(baseResult.seller || baseResult.price);
+        baseResult.success = !!(baseResult.price || baseResult.title);
         return baseResult;
       }, result);
       
     } else if (platform === 'N11') {
       result = await page.evaluate((baseResult) => {
-        const sellerEl = document.querySelector('.seller-name, .shopName, a[href*="/magaza/"]');
-        baseResult.seller = sellerEl?.textContent?.trim() || null;
-        
-        const priceEl = document.querySelector('.newPrice ins, .price, .priceContainer');
-        baseResult.priceText = priceEl?.textContent?.trim() || null;
-        if (baseResult.priceText) {
-          baseResult.price = parseFloat(baseResult.priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+        const priceEl = document.querySelector('.newPrice ins, [class*="price"]');
+        if (priceEl) {
+          baseResult.priceText = priceEl.textContent.trim();
+          const match = baseResult.priceText.match(/[\d\.]+/);
+          if (match) {
+            baseResult.price = parseFloat(match[0].replace('.', ''));
+          }
         }
         
-        const titleEl = document.querySelector('.proName, h1.product-name, #product-name');
-        baseResult.title = titleEl?.textContent?.trim() || null;
+        const sellerEl = document.querySelector('.seller-name, [class*="shop"]');
+        if (sellerEl) {
+          baseResult.seller = sellerEl.textContent.trim();
+        }
         
-        baseResult.success = !!(baseResult.seller || baseResult.price);
+        const titleEl = document.querySelector('h1');
+        if (titleEl) {
+          baseResult.title = titleEl.textContent.trim();
+        }
+        
+        baseResult.success = !!(baseResult.price || baseResult.title);
         return baseResult;
       }, result);
     }
@@ -204,7 +207,7 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'Seller Scraper API',
-    version: '3.0.0',
+    version: '3.1.0',
     provider: 'Browserless.io',
     endpoints: ['/api/scrape', '/api/scrape-multiple', '/health']
   });
@@ -258,6 +261,6 @@ app.post('/api/scrape-multiple', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Seller Scraper API v3 running on port ${PORT}`);
+  console.log(`Seller Scraper API v3.1 running on port ${PORT}`);
   console.log('Using Browserless.io for Chrome');
 });
