@@ -511,69 +511,78 @@ app.get('/api/search', async (req, res) => {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1920, height: 1080 });
     
-    let searchUrl = '';
-    if (platform === 'trendyol') {
-      searchUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-    } else if (platform === 'hepsiburada') {
-      searchUrl = `https://www.hepsiburada.com/ara?q=${encodeURIComponent(q)}`;
-    } else {
-      return res.status(400).json({ error: 'Desteklenen platformlar: trendyol, hepsiburada' });
-    }
+    const searchUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
     
     await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 5000));
     
-    // Sayfayı aşağı kaydır - daha fazla ürün yüklemek için
-    for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, 1000));
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    
-    let products = [];
-    
-    if (platform === 'trendyol') {
-      products = await page.evaluate((maxLimit) => {
-        const items = [];
-        const productCards = document.querySelectorAll('[data-id], .p-card-wrppr, [class*="product-card"]');
-        
-        productCards.forEach((card, index) => {
-          if (index >= maxLimit) return;
+    // JSON state'den veya HTML'den ürünleri çek
+    const products = await page.evaluate((maxLimit) => {
+      const items = [];
+      
+      // Yöntem 1: JSON state'den çek
+      const scripts = document.querySelectorAll('script');
+      for (const script of scripts) {
+        const text = script.textContent || '';
+        if (text.includes('__SEARCH_APP_INITIAL_STATE__') || text.includes('products')) {
+          try {
+            const match = text.match(/window\.__SEARCH_APP_INITIAL_STATE__\s*=\s*({.+?});/s);
+            if (match) {
+              const data = JSON.parse(match[1]);
+              const prods = data?.products || data?.result?.products || [];
+              prods.slice(0, maxLimit).forEach(p => {
+                if (p.price?.sellingPrice?.value > 10) {
+                  items.push({
+                    title: p.name || p.title,
+                    price: p.price?.sellingPrice?.value || p.price?.originalPrice?.value,
+                    priceText: (p.price?.sellingPrice?.value || 0).toLocaleString('tr-TR') + ' TL',
+                    seller: p.merchantName || p.merchant?.name || null,
+                    rating: p.ratingScore?.averageRating?.toString() || null,
+                    url: 'https://www.trendyol.com' + (p.url || ''),
+                    image: p.images?.[0] || null,
+                    platform: 'Trendyol'
+                  });
+                }
+              });
+            }
+          } catch (e) {}
+        }
+      }
+      
+      // Yöntem 2: JSON bulunamazsa HTML'den çek
+      if (items.length === 0) {
+        const cards = document.querySelectorAll('div[data-id]');
+        cards.forEach((card, i) => {
+          if (i >= maxLimit) return;
           
-          const titleEl = card.querySelector('[class*="prdct-desc-cntnr-name"], [class*="product-name"], span[title]');
-          const priceEl = card.querySelector('[class*="prc-box-dscntd"], [class*="price"]');
-          const sellerEl = card.querySelector('[class*="merchant"], [class*="seller"]');
-          const linkEl = card.querySelector('a[href*="/p-"]');
-          const ratingEl = card.querySelector('[class*="rating"], [class*="score"]');
-          const imageEl = card.querySelector('img[src*="cdn"]');
+          const link = card.querySelector('a');
+          const priceEl = card.querySelector('div[class*="prc"]');
+          const titleEl = card.querySelector('span[class*="prdct-desc"]') || card.querySelector('h3') || card.querySelector('span[title]');
+          
+          const href = link?.getAttribute('href') || '';
+          const priceText = priceEl?.textContent || '';
+          const priceMatch = priceText.match(/([\d\.]+)/);
+          const price = priceMatch ? parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.')) : null;
           
           const title = titleEl?.textContent?.trim() || titleEl?.getAttribute('title') || '';
-          const priceText = priceEl?.textContent?.trim() || '';
-          const priceMatch = priceText.match(/([\d\.]+)/);
-          const price = priceMatch ? parseFloat(priceMatch[1].replace('.', '')) : null;
           
-          const href = linkEl?.getAttribute('href') || '';
-          const fullUrl = href.startsWith('http') ? href : 'https://www.trendyol.com' + href;
-          
-          const ratingText = ratingEl?.textContent?.trim() || '';
-          const ratingMatch = ratingText.match(/([\d,\.]+)/);
-          
-          if (title && price && price > 1000) {
+          if (title && price && price > 10) {
             items.push({
               title: title,
               price: price,
               priceText: price.toLocaleString('tr-TR') + ' TL',
-              seller: sellerEl?.textContent?.trim() || null,
-              rating: ratingMatch ? ratingMatch[1] : null,
-              url: fullUrl,
-              image: imageEl?.src || null,
+              seller: null,
+              rating: null,
+              url: href.startsWith('http') ? href : 'https://www.trendyol.com' + href,
+              image: null,
               platform: 'Trendyol'
             });
           }
         });
-        
-        return items;
-      }, parseInt(limit));
-    }
+      }
+      
+      return items;
+    }, parseInt(limit));
     
     await browser.close();
     
