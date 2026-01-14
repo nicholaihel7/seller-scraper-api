@@ -57,7 +57,7 @@ async function scrapeSeller(url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     
     // Sayfanın JS'inin çalışması için bekle
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 8000));
     
     let result = {
       url,
@@ -152,24 +152,23 @@ async function scrapeSeller(url) {
           // Script içinden satıcı bilgisini ara
           const pageSource = document.documentElement.innerHTML;
           
-          // "merchantName":"XXX" formatı
-          let sellerMatch = pageSource.match(/"merchantName"\s*:\s*"([^"]{2,50})"/);
+          // Direkt "name":"XXX" pattern - Troy, Apple, Yetkili içerenler
+          let sellerMatch = pageSource.match(/"name"\s*:\s*"([^"]*(?:Troy|Yetkili|Official|Resmi)[^"]*)"/i);
           
-          // "seller":"Satıcı"... sonra "name":"XXX" formatı
+          // "merchantName":"XXX" formatı
           if (!sellerMatch) {
-            // Trendyol'un özel formatı: ..."seller":"Satıcı"..."name":"Troy Apple Yetkili Satıcı"...
-            sellerMatch = pageSource.match(/"seller"\s*:\s*"Satıcı"[^}]*"name"\s*:\s*"([^"]+)"/);
+            sellerMatch = pageSource.match(/"merchantName"\s*:\s*"([^"]{2,50})"/);
           }
           
-          // Alternatif: "name":"XXX Yetkili Satıcı" veya "XXX Store"
+          // Genel merchant/seller objesinden name çek
           if (!sellerMatch) {
-            sellerMatch = pageSource.match(/"name"\s*:\s*"([^"]*(?:Yetkili|Satıcı|Store|Mağaza)[^"]*)"/i);
+            sellerMatch = pageSource.match(/"merchant"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/);
           }
           
           if (sellerMatch && sellerMatch[1]) {
-            // Kargo, indirim gibi kelimeleri içeriyorsa atla
             const seller = sellerMatch[1];
-            if (!seller.includes('Kargo') && !seller.includes('Bedava') && !seller.includes('indirim')) {
+            // Kargo, indirim, kampanya gibi kelimeleri içeriyorsa atla
+            if (!seller.includes('Kargo') && !seller.includes('Bedava') && !seller.includes('indirim') && !seller.includes('Kampanya')) {
               baseResult.seller = seller;
             }
           }
