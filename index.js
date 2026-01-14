@@ -462,7 +462,8 @@ app.get('/api/all-sellers', async (req, res) => {
     
     for (const seller of result.sellers) {
       const key = `${seller.seller}-${seller.price}`;
-      if (!seen.has(key) && seller.price) {  // Fiyatı olmayanları da atla
+      // Fiyatı olmayanları ve 1000 TL altındakileri atla (geçersiz fiyat)
+      if (!seen.has(key) && seller.price && seller.price > 1000) {
         seen.add(key);
         uniqueSellers.push(seller);
       }
@@ -493,8 +494,115 @@ app.get('/api/all-sellers', async (req, res) => {
   }
 });
 
+// TRENDYOL ARAMA - Ürün adına göre tüm sonuçları çek
+app.get('/api/search', async (req, res) => {
+  const { q, platform = 'trendyol', limit = 50 } = req.query;
+  
+  if (!q) {
+    return res.status(400).json({ error: 'q (arama sorgusu) parametresi gerekli' });
+  }
+  
+  let browser;
+  
+  try {
+    browser = await getBrowser();
+    const page = await browser.newPage();
+    
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    let searchUrl = '';
+    if (platform === 'trendyol') {
+      searchUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
+    } else if (platform === 'hepsiburada') {
+      searchUrl = `https://www.hepsiburada.com/ara?q=${encodeURIComponent(q)}`;
+    } else {
+      return res.status(400).json({ error: 'Desteklenen platformlar: trendyol, hepsiburada' });
+    }
+    
+    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 3000));
+    
+    // Sayfayı aşağı kaydır - daha fazla ürün yüklemek için
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, 1000));
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    
+    let products = [];
+    
+    if (platform === 'trendyol') {
+      products = await page.evaluate((maxLimit) => {
+        const items = [];
+        const productCards = document.querySelectorAll('[data-id], .p-card-wrppr, [class*="product-card"]');
+        
+        productCards.forEach((card, index) => {
+          if (index >= maxLimit) return;
+          
+          const titleEl = card.querySelector('[class*="prdct-desc-cntnr-name"], [class*="product-name"], span[title]');
+          const priceEl = card.querySelector('[class*="prc-box-dscntd"], [class*="price"]');
+          const sellerEl = card.querySelector('[class*="merchant"], [class*="seller"]');
+          const linkEl = card.querySelector('a[href*="/p-"]');
+          const ratingEl = card.querySelector('[class*="rating"], [class*="score"]');
+          const imageEl = card.querySelector('img[src*="cdn"]');
+          
+          const title = titleEl?.textContent?.trim() || titleEl?.getAttribute('title') || '';
+          const priceText = priceEl?.textContent?.trim() || '';
+          const priceMatch = priceText.match(/([\d\.]+)/);
+          const price = priceMatch ? parseFloat(priceMatch[1].replace('.', '')) : null;
+          
+          const href = linkEl?.getAttribute('href') || '';
+          const fullUrl = href.startsWith('http') ? href : 'https://www.trendyol.com' + href;
+          
+          const ratingText = ratingEl?.textContent?.trim() || '';
+          const ratingMatch = ratingText.match(/([\d,\.]+)/);
+          
+          if (title && price && price > 1000) {
+            items.push({
+              title: title,
+              price: price,
+              priceText: price.toLocaleString('tr-TR') + ' TL',
+              seller: sellerEl?.textContent?.trim() || null,
+              rating: ratingMatch ? ratingMatch[1] : null,
+              url: fullUrl,
+              image: imageEl?.src || null,
+              platform: 'Trendyol'
+            });
+          }
+        });
+        
+        return items;
+      }, parseInt(limit));
+    }
+    
+    await browser.close();
+    
+    // Fiyata göre sırala
+    products.sort((a, b) => a.price - b.price);
+    
+    const prices = products.map(p => p.price).filter(Boolean);
+    
+    res.json({
+      query: q,
+      platform: platform,
+      totalProducts: products.length,
+      cheapest: prices.length ? Math.min(...prices) : null,
+      mostExpensive: prices.length ? Math.max(...prices) : null,
+      products: products,
+      success: products.length > 0
+    });
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({
+      error: error.message,
+      success: false
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Seller Scraper API v3.1 running on port ${PORT}`);
+  console.log(`Seller Scraper API v4.0 running on port ${PORT}`);
   console.log('Using Browserless.io for Chrome');
 });
