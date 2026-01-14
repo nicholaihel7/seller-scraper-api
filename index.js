@@ -611,6 +611,68 @@ app.get('/api/search', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// DEBUG - Sayfanın HTML'ini göster
+app.get('/api/debug', async (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'url parametresi gerekli' });
+  }
+  
+  let browser;
+  
+  try {
+    browser = await getBrowser();
+    const page = await browser.newPage();
+    
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 5000));
+    
+    const pageData = await page.evaluate(() => {
+      // Script tag'lerindeki state'leri bul
+      const scripts = document.querySelectorAll('script');
+      const states = [];
+      
+      for (const script of scripts) {
+        const text = script.textContent || '';
+        if (text.includes('__') && text.includes('STATE')) {
+          const match = text.match(/window\.(__[A-Z_]+__)\s*=/);
+          if (match) {
+            states.push(match[1]);
+          }
+        }
+      }
+      
+      // Ürün kartlarını say
+      const cards1 = document.querySelectorAll('div[data-id]').length;
+      const cards2 = document.querySelectorAll('[class*="product"]').length;
+      const cards3 = document.querySelectorAll('[class*="prdct"]').length;
+      
+      return {
+        title: document.title,
+        states: states,
+        cardCounts: { 'div[data-id]': cards1, '[class*="product"]': cards2, '[class*="prdct"]': cards3 },
+        bodyTextSample: document.body.innerText.substring(0, 2000)
+      };
+    });
+    
+    await browser.close();
+    
+    res.json({
+      url: url,
+      ...pageData
+    });
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Seller Scraper API v4.0 running on port ${PORT}`);
   console.log('Using Browserless.io for Chrome');
