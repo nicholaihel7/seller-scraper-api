@@ -251,9 +251,9 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'Seller Scraper API',
-    version: '3.1.0',
+    version: '4.0.0',
     provider: 'Browserless.io',
-    endpoints: ['/api/scrape', '/api/scrape-multiple', '/health']
+    endpoints: ['/api/scrape', '/api/scrape-multiple', '/api/all-sellers', '/health']
   });
 });
 
@@ -301,6 +301,147 @@ app.post('/api/scrape-multiple', async (req, res) => {
     averagePrice: avgPrice,
     sellers: results
   });
+});
+
+// TÜM SATICILARI ÇEK - Trendyol için
+app.get('/api/all-sellers', async (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL parametresi gerekli' });
+  }
+  
+  if (!url.includes('trendyol.com')) {
+    return res.status(400).json({ error: 'Şu an sadece Trendyol destekleniyor' });
+  }
+  
+  let browser;
+  
+  try {
+    browser = await getBrowser();
+    const page = await browser.newPage();
+    
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    
+    // Sayfanın yüklenmesi için bekle
+    await new Promise(r => setTimeout(r, 5000));
+    
+    // "Diğer Satıcılar" sekmesine tıkla
+    try {
+      await page.click('[data-testid="other-sellers-tab"], [class*="other-sellers"], a[href*="diger-saticilar"]');
+      await new Promise(r => setTimeout(r, 2000));
+    } catch (e) {
+      // Sekme yoksa devam et
+    }
+    
+    // "Tüm Satıcıları Göster" butonuna tıkla
+    try {
+      const showAllButton = await page.$('button:has-text("TÜM SATICILARI"), [class*="show-all-sellers"]');
+      if (showAllButton) {
+        await showAllButton.click();
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    } catch (e) {
+      // Buton yoksa devam et
+    }
+    
+    // Tüm satıcıları çek
+    const result = await page.evaluate(() => {
+      const sellers = [];
+      
+      // Ürün adını al
+      const titleEl = document.querySelector('h1, [class*="product-name"]');
+      const productTitle = titleEl?.textContent?.trim() || '';
+      
+      // Ana satıcı (sayfadaki varsayılan)
+      const mainPrice = document.querySelector('[class*="prc-dsc"], [class*="product-price"]');
+      const mainSeller = document.querySelector('[class*="merchant"] a, [class*="seller-name"]');
+      
+      if (mainPrice) {
+        const priceText = mainPrice.textContent.trim();
+        const priceMatch = priceText.match(/[\d\.]+/);
+        sellers.push({
+          seller: mainSeller?.textContent?.trim() || 'Ana Satıcı',
+          price: priceMatch ? parseFloat(priceMatch[0].replace('.', '')) : null,
+          priceText: priceText,
+          rating: null,
+          isMain: true
+        });
+      }
+      
+      // Diğer satıcılar bölümünden çek
+      const sellerCards = document.querySelectorAll('[class*="other-seller"], [class*="merchant-box"], [class*="seller-card"]');
+      
+      sellerCards.forEach(card => {
+        const nameEl = card.querySelector('[class*="merchant-name"], [class*="seller-name"], a');
+        const priceEl = card.querySelector('[class*="price"]');
+        const ratingEl = card.querySelector('[class*="rating"], [class*="score"]');
+        
+        if (nameEl || priceEl) {
+          const priceText = priceEl?.textContent?.trim() || '';
+          const priceMatch = priceText.match(/[\d\.]+/);
+          const ratingText = ratingEl?.textContent?.trim() || '';
+          const ratingMatch = ratingText.match(/[\d,\.]+/);
+          
+          sellers.push({
+            seller: nameEl?.textContent?.trim() || 'Bilinmeyen Satıcı',
+            price: priceMatch ? parseFloat(priceMatch[0].replace('.', '')) : null,
+            priceText: priceText,
+            rating: ratingMatch ? ratingMatch[0] : null,
+            isMain: false
+          });
+        }
+      });
+      
+      // HTML'den JSON verisini de dene
+      const pageSource = document.documentElement.innerHTML;
+      const merchantMatches = pageSource.matchAll(/"merchantName"\s*:\s*"([^"]+)"[^}]*"sellingPrice"\s*:\s*(\d+)/g);
+      
+      for (const match of merchantMatches) {
+        const existingSeller = sellers.find(s => s.seller === match[1]);
+        if (!existingSeller) {
+          sellers.push({
+            seller: match[1],
+            price: parseInt(match[2]),
+            priceText: parseInt(match[2]).toLocaleString('tr-TR') + ' TL',
+            rating: null,
+            isMain: false
+          });
+        }
+      }
+      
+      return {
+        productTitle,
+        sellers,
+        totalSellers: sellers.length
+      };
+    });
+    
+    await browser.close();
+    
+    // Fiyata göre sırala
+    result.sellers.sort((a, b) => (a.price || 999999) - (b.price || 999999));
+    
+    // En ucuz ve en pahalı
+    const prices = result.sellers.map(s => s.price).filter(Boolean);
+    result.cheapest = prices.length ? Math.min(...prices) : null;
+    result.mostExpensive = prices.length ? Math.max(...prices) : null;
+    result.success = result.sellers.length > 0;
+    result.platform = 'Trendyol';
+    result.url = url;
+    
+    res.json(result);
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({
+      error: error.message,
+      success: false
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
